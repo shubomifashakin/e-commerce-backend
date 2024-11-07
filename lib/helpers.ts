@@ -1,5 +1,7 @@
 import { randomBytes, scryptSync } from "crypto";
 import { z } from "zod";
+import rateLimit from "express-rate-limit";
+import { User, UserWithPassword } from "./types";
 
 export const defaultTimeOut = 10000;
 
@@ -20,14 +22,6 @@ export class InvalidCredentials {
     this.message = message;
   }
 }
-
-export type User = {
-  email: string;
-  password: string;
-  first_name: string;
-  last_name: string;
-  id: string;
-};
 
 export const signUpDetailsValidator = z.object({
   email: z.string().email(),
@@ -58,6 +52,17 @@ export function isUser(result: unknown): result is User {
     "last_name" in result
   );
 }
+export function isUserWPassword(result: unknown): result is UserWithPassword {
+  return (
+    typeof result === "object" &&
+    result !== null &&
+    "id" in result &&
+    "email" in result &&
+    "first_name" in result &&
+    "last_name" in result &&
+    "password" in result
+  );
+}
 
 const encryptPassword = (password: string, salt: string) => {
   return scryptSync(password, salt, 32).toString("hex");
@@ -78,15 +83,10 @@ export const comparePasswords = (password: string, hash: string): Boolean => {
   return originalPassHash === currentPassHash;
 };
 
-import rateLimit from "express-rate-limit";
-
-// Create a rate limiter that allows 100 requests per IP every 15 minutes
-const rateLimiter = rateLimit({
-  windowMs: 5 * 60 * 1000, // 15 minutes
+export const rateLimiter = rateLimit({
+  windowMs: 5 * 60 * 1000,
   max: 5,
   message: "Too many requests, please try again later.",
   standardHeaders: true,
   legacyHeaders: false,
 });
-
-export default rateLimiter;

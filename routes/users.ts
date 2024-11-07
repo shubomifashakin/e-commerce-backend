@@ -2,115 +2,100 @@ import express, { NextFunction, Request, Response } from "express";
 import jwt from "jsonwebtoken";
 import dotenv from "dotenv";
 import { prisma } from "../lib/prisma";
-import rateLimiter, {
+import {
   comparePasswords,
   defaultTimeOut,
   hashPassword,
   InvalidCredentials,
   isUser,
+  isUserWPassword,
   logInDetailsValidator,
   signUpDetailsValidator,
   TimeoutError,
-  User,
 } from "../lib/helpers";
 
 import { z } from "zod";
 
 import { PrismaClientKnownRequestError } from "@prisma/client/runtime/library";
+import { User, UserWithPassword } from "../lib/types";
 
 dotenv.config();
 
 export const usersRouter = express.Router();
 
-usersRouter.post(
-  "/signup",
-  rateLimiter,
-  async (req: Request, res: Response) => {
-    //get the data sent
-    const body = req.body;
+usersRouter.post("/signup", async (req: Request, res: Response) => {
+  //get the data sent
+  const body = req.body;
 
-    try {
-      //validate the data sent
-      const { email, password, firstName, lastName } =
-        signUpDetailsValidator.parse(body);
+  try {
+    //validate the data sent
+    const { email, password, firstName, lastName } =
+      signUpDetailsValidator.parse(body);
 
-      //hash the password
-      const hashedPassword = hashPassword(password);
+    //hash the password
+    const hashedPassword = hashPassword(password);
 
-      console.log("passed hash");
+    //insert to database
+    const userInfo: User | unknown = await Promise.race([
+      prisma.user.create({
+        data: {
+          email,
+          first_name: firstName,
+          last_name: lastName,
+          password: hashedPassword,
+        },
+        select: {
+          id: true,
+          email: true,
+          last_name: true,
+          first_name: true,
+        },
+      }),
+      new Promise((_, rej) => {
+        setTimeout(() => {
+          rej(new TimeoutError());
+        }, defaultTimeOut);
+      }),
+    ]);
 
-      //insert to database
-      const result: User | unknown = await Promise.race([
-        prisma.user.create({
-          data: {
-            email,
-            first_name: firstName,
-            last_name: lastName,
-            password: hashedPassword,
-          },
-          select: {
-            email: true,
-            first_name: true,
-            id: true,
-            last_name: true,
-          },
-        }),
-        new Promise((_, rej) => {
-          setTimeout(() => {
-            rej(new TimeoutError());
-          }, defaultTimeOut);
-        }),
-      ]);
+    if (!isUser(userInfo)) return;
 
-      if (!isUser(result)) return;
+    if (!process.env.SECRET) return;
 
-      console.log("passed resukt");
+    //generate jwt
+    const token = jwt.sign(userInfo, process.env.SECRET, {
+      algorithm: "HS256",
+      expiresIn: "24h",
+    });
 
-      if (!process.env.SECRET) return;
-
-      //generate jwt
-      const token = jwt.sign(result, process.env.SECRET, {
-        algorithm: "HS256",
-        expiresIn: "24h",
-      });
-
-      console.log("passed jwt");
-
-      res
-        .cookie("token", token, {
-          // can only be accessed by server requests
-          httpOnly: true,
-          // path = where the cookie is valid
-          path: "/",
-          // secure = only send cookie over https
-          secure: true,
-          // sameSite = only send cookie if the request is coming from the same origin
-          sameSite: "none", // "strict" | "lax" | "none" (secure must be true)
-          // maxAge = how long the cookie is valid for in milliseconds
-          maxAge: 3600000, // 1 hour
-        })
-        .json("success");
-    } catch (error: unknown) {
-      console.log(error);
-      if (error instanceof PrismaClientKnownRequestError) {
-        if (error.code.toLowerCase() === "p2002") {
-          res.status(400).json("Email already exists");
-        }
+    res
+      .cookie("session-cookie", token, {
+        maxAge: 24 * 60 * 60 * 1000,
+        httpOnly: true,
+        secure: false,
+        sameSite: "none",
+      })
+      .json(userInfo);
+  } catch (error: unknown) {
+    if (error instanceof PrismaClientKnownRequestError) {
+      if (error.code.toLowerCase() === "p2002") {
+        res.status(400).json("Email already exists");
       }
-
-      if (error instanceof z.ZodError) {
-        res.status(400).json(error.issues[0].message);
-      }
-
-      if (error instanceof TimeoutError) {
-        res.status(error.code).json(error.message);
-      }
-      res.status(500);
     }
-  }
-).get;
 
-usersRouter.post("/login", rateLimiter, async (req: Request, res: Response) => {
+    if (error instanceof z.ZodError) {
+      res.status(400).json(error.issues[0].message);
+    }
+
+    if (error instanceof TimeoutError) {
+      res.status(error.code).json(error.message);
+    }
+
+    res.status(500).json("dd");
+  }
+});
+
+usersRouter.post("/login", async (req: Request, res: Response) => {
   //get the data sent
   const body = req.body;
 
@@ -119,7 +104,7 @@ usersRouter.post("/login", rateLimiter, async (req: Request, res: Response) => {
     const { email, password } = logInDetailsValidator.parse(body);
 
     //get from database
-    const result: User | unknown = await Promise.race([
+    const result: UserWithPassword | unknown = await Promise.race([
       prisma.user.findUnique({
         where: {
           email,
@@ -139,18 +124,14 @@ usersRouter.post("/login", rateLimiter, async (req: Request, res: Response) => {
       }),
     ]);
 
-    console.log(result);
-
-    if (!isUser(result)) return;
+    if (!isUserWPassword(result)) return;
 
     const { password: hashedPassword, ...credentials } = result;
 
     //compare passwords
-    if (!comparePasswords(password, result.password)) {
+    if (!comparePasswords(password, hashedPassword)) {
       throw new InvalidCredentials();
     }
-
-    console.log("compared");
 
     if (!process.env.SECRET) return;
 
@@ -160,25 +141,15 @@ usersRouter.post("/login", rateLimiter, async (req: Request, res: Response) => {
       expiresIn: "24h",
     });
 
-    console.log(token);
-
     res
-      .cookie("token", token, {
-        // can only be accessed by server requests
+      .cookie("session-cookie", token, {
+        maxAge: 24 * 60 * 60 * 1000,
         httpOnly: true,
-        // path = where the cookie is valid
-        path: "/",
-        // secure = only send cookie over https
-        secure: true,
-        // sameSite = only send cookie if the request is coming from the same origin
-        sameSite: "none", // "strict" | "lax" | "none" (secure must be true)
-        // maxAge = how long the cookie is valid for in milliseconds
-        maxAge: 3600000, // 1 hour
+        secure: false,
+        sameSite: "none",
       })
-      .json("successs");
+      .json(credentials);
   } catch (error: unknown) {
-    console.log(error);
-
     if (error instanceof z.ZodError) {
       res.status(400).json(error.issues[0].message);
     }
@@ -191,6 +162,18 @@ usersRouter.post("/login", rateLimiter, async (req: Request, res: Response) => {
       res.status(error.code).json(error.message);
     }
 
-    res.status(500).json("internal server error");
+    res.json("internal server error");
   }
+});
+
+usersRouter.post("/logout", (_, res: Response) => {
+  // Clear the cookie by setting it with an expired date
+  res.clearCookie("session-cookie", {
+    httpOnly: true,
+    secure: false,
+    sameSite: "none",
+    path: "/",
+  });
+
+  res.json({ message: "Logged out successfully" });
 });
