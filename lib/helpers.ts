@@ -1,7 +1,7 @@
 import { randomBytes, scryptSync } from "crypto";
 import { z } from "zod";
 import rateLimit from "express-rate-limit";
-import { User, UserWithPassword } from "./types";
+import { PastOrder, Product, User, UserWithPassword } from "./types";
 
 export const defaultTimeOut = 10000;
 
@@ -52,6 +52,7 @@ export function isUser(result: unknown): result is User {
     "last_name" in result
   );
 }
+
 export function isUserWPassword(result: unknown): result is UserWithPassword {
   return (
     typeof result === "object" &&
@@ -61,6 +62,41 @@ export function isUserWPassword(result: unknown): result is UserWithPassword {
     "first_name" in result &&
     "last_name" in result &&
     "password" in result
+  );
+}
+
+// Type guard to check if something is an array of PastOrder
+export function isPastOrderArray(value: any): value is PastOrder[] {
+  // Check if value is an array
+  if (!Array.isArray(value)) {
+    return false;
+  }
+
+  // Check if each item in the array is a valid PastOrder
+  return value.every((item) => isPastOrder(item));
+}
+
+// Helper function to check if a single item is a valid PastOrder
+function isPastOrder(item: any): item is PastOrder {
+  return (
+    typeof item === "object" &&
+    item !== null &&
+    typeof item.quantity === "number" &&
+    typeof item.created_at === "object" &&
+    isProduct(item.product) // Check if product is a valid Product object
+  );
+}
+
+// Helper function to check if something is a valid Product
+function isProduct(product: any): product is Product {
+  return (
+    typeof product === "object" &&
+    product !== null &&
+    typeof product.name === "string" &&
+    typeof product.price === "number" &&
+    typeof product.image === "string" &&
+    typeof product.id === "string" &&
+    typeof product.description === "string"
   );
 }
 

@@ -16,3 +16,19 @@ declare global {
     }
   }
 }
+
+export interface Product {
+  name: string;
+  price: number;
+  image: string;
+  id: string;
+  description: string;
+}
+
+export interface OrderItem {
+  quantity: number;
+}
+
+export interface PastOrder extends OrderItem {
+  product: Product;
+}

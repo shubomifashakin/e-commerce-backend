@@ -1,5 +1,5 @@
 import express, { NextFunction, Request, Response } from "express";
-import jwt, { JsonWebTokenError } from "jsonwebtoken";
+import jwt from "jsonwebtoken";
 import { z } from "zod";
 
 import { PrismaClientKnownRequestError } from "@prisma/client/runtime/library";
@@ -8,35 +8,36 @@ import dotenv from "dotenv";
 import { prisma } from "../lib/prisma";
 import {
   defaultTimeOut,
+  isPastOrderArray,
   orderSchemaValidator,
   TimeoutError,
 } from "../lib/helpers";
-import { User } from "../lib/types";
+import { PastOrder, User } from "../lib/types";
 
 dotenv.config();
 
 export const ordersRouter = express.Router();
 
-//middleware
+//middleware to run anytime the user tries to order something
+//it basically verifies the user is actually logged in (if a jwt exists in cookie)
 ordersRouter.use(function (req: Request, res: Response, next: NextFunction) {
-  console.log("ran middle order");
-
   //get the session-token from the req cookies
   const token = req.cookies["session-cookie"];
-  // console.log(req.signedCookies);
 
   //if there is no session token, redirect the user to the login page
   if (!token) {
     res.redirect("http://localhost:5173/login");
+
+    return;
   }
 
-  if (!process.env.ACCESS_TOKEN_SECRET) {
+  if (!process.env.JWT_SECRET) {
     return;
   }
 
   // If there is a token, verify it
   try {
-    const user = jwt.verify(token, process.env.ACCESS_TOKEN_SECRET) as User;
+    const user = jwt.verify(token, process.env.JWT_SECRET) as User;
 
     //add the user id to the req
     req.user_id = user.id;
@@ -53,7 +54,6 @@ ordersRouter.post("/", async (req: Request, res: Response) => {
   const user_id = req.user_id;
 
   if (!user_id) {
-    console.log(user_id);
     res.redirect("http://localhost:5173/login");
     return;
   }
@@ -82,60 +82,126 @@ ordersRouter.post("/", async (req: Request, res: Response) => {
       }),
     ]);
 
-    res.redirect("http://localhost:5173/catalog");
+    res.status(200).json("success");
+    return;
   } catch (error: unknown) {
-    console.log(error);
     if (error instanceof PrismaClientKnownRequestError) {
       if (error.code.toLowerCase() === "p2002") {
         res.status(400).json("Order already exists");
+        return;
       }
     }
 
     if (error instanceof z.ZodError) {
       res.status(400).json(error.issues[0].message);
+      return;
     }
 
     if (error instanceof TimeoutError) {
       res.status(error.code).json(error.message);
+      return;
     }
 
-    res.status(500);
+    res.status(500).json("Internal Server Error");
   }
 });
 
-// ordersRouter.get("/history", async (req: Request, res: Response) => {
-//   //get the user id from the request
-//   const user_id: string = req.user_id;
+ordersRouter.get("/history", async (req: Request, res: Response) => {
+  //get the user id from the request
+  const user_id = req.user_id;
 
-//   try {
-//     //get the orders from database
-//     const result: User | unknown = await Promise.race([
-//       prisma.orders.findMany({
-//         where: {
-//           user_id,
-//         },
-//         select: {
-//           product: true,
-//           quantity: true,
-//         },
-//         take: 5,
-//       }),
-//       new Promise((_, rej) => {
-//         setTimeout(() => {
-//           rej(new TimeoutError());
-//         }, defaultTimeOut);
-//       }),
-//     ]);
+  //get the cursor and the name from searchparams if avaialable
+  const skip = Number(req.query.skip) || 0;
+  const name = req.query.name;
 
-//     //return orders to user
-//     res.status(200).json(result);
-//   } catch (error: unknown) {
-//     if (error instanceof TimeoutError) {
-//       res.status(error.code).json(error.message);
-//     }
+  const startFrom = skip * 5;
+  const currPageIndex = startFrom / 5;
 
-//     res.status(500);
-//   }
-// });
+  if (!user_id) {
+    res.redirect("http://localhost:5173/login");
+    return;
+  }
 
-//middleware to run for all routes defined in ordersrouter
+  try {
+    //get all the orders with that user id from the database
+    const result: PastOrder[] | unknown = await Promise.race([
+      prisma.orders.findMany({
+        where: {
+          user_id,
+        },
+        select: {
+          product: true,
+          quantity: true,
+          created_at: true,
+        },
+        skip: startFrom,
+        take: 6,
+        orderBy: { created_at: "desc" },
+      }),
+      new Promise((_, rej) => {
+        setTimeout(() => {
+          rej(new TimeoutError());
+        }, defaultTimeOut);
+      }),
+    ]);
+
+    if (!isPastOrderArray(result)) {
+      throw new TimeoutError();
+    }
+
+    //if length returned is greater than our take, then we have a next page
+    if (result.length > 5 && currPageIndex <= 0) {
+      res.json({
+        previousOrders: result.slice(0, result.length - 1),
+        paginationDetails: {
+          hasNextPage: true,
+          nextPage: currPageIndex + 1,
+        },
+      });
+    }
+
+    //if lenght returned is greater than 5 and currpageIndex is greater than 1, we have next and previous
+    if (result.length > 5 && currPageIndex > 0) {
+      res.json({
+        previousOrders: result.slice(0, result.length - 1),
+        paginationDetails: {
+          hasNextPage: true,
+          hasPreviousPage: true,
+          nextPage: currPageIndex + 1,
+          previousPage: currPageIndex - 1,
+        },
+      });
+    }
+
+    //if length returned is not greater than 5, no next page
+    if (result.length <= 5 && currPageIndex <= 0) {
+      res.json({
+        previousOrders: result,
+        paginationDetails: {
+          hasNextPage: false,
+          hasPreviousPage: false,
+        },
+      });
+    }
+
+    //if length returned is not greater than 5,but currpageIndex greater than 1, we have no next but we have a previous
+    if (result.length <= 5 && currPageIndex > 0) {
+      res.json({
+        previousOrders: result,
+        paginationDetails: {
+          hasNextPage: false,
+          hasPreviousPage: true,
+          previousPage: currPageIndex - 1,
+        },
+      });
+    }
+  } catch (error: unknown) {
+    if (error instanceof TimeoutError) {
+      res.status(error.code).json(error.message);
+      return;
+    }
+
+    res.status(500).json("internal server error");
+    return;
+  }
+});
