@@ -16,7 +16,7 @@ export class TimeoutError {
 
 export class InvalidCredentials {
   code = 401;
-  message = "Invalid log in credentials";
+  message = "Invalid Log In credentials";
 
   constructor(message = "Invalid log in credentials") {
     this.message = message;
@@ -122,7 +122,7 @@ export const comparePasswords = (password: string, hash: string): Boolean => {
 export const rateLimiter = rateLimit({
   windowMs: 5 * 60 * 1000,
   max: 5,
-  message: "Too many requests, please try again later.",
+  message: JSON.stringify("Rate Limit Exceeded"),
   standardHeaders: true,
   legacyHeaders: false,
 });

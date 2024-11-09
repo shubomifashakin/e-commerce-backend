@@ -7,7 +7,7 @@ import { defaultTimeOut, TimeoutError } from "../lib/helpers";
 export const productsRouter = express.Router();
 
 //gets all products
-productsRouter.get("/", async (req, res) => {
+productsRouter.get("/", async (req: Request, res: Response) => {
   //get the cursor and the name from searchparams if avaialable
   const skip = Number(req.query.skip) || 0;
   const name = req.query.name;
@@ -135,7 +135,6 @@ productsRouter.get("/:productId", async (req: Request, res: Response) => {
   const productId = req.params.productId;
 
   try {
-    //race condition
     const result = await Promise.race([
       prisma.products.findUnique({
         where: {
@@ -156,11 +155,3 @@ productsRouter.get("/:productId", async (req: Request, res: Response) => {
     }
   }
 });
-
-// MIDDLEWARE: this runs whenever a user goes to /'productid
-// productsRouter.param("productId", (req, res, next, productId) => {
-//   //check if the productId is vald
-//   if (typeof productId !== "string") {
-//     res.send("failed");
-//   }
-// });

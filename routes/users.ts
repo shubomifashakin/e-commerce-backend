@@ -10,6 +10,7 @@ import {
   isUser,
   isUserWPassword,
   logInDetailsValidator,
+  rateLimiter,
   signUpDetailsValidator,
   TimeoutError,
 } from "../lib/helpers";
@@ -23,83 +24,87 @@ dotenv.config();
 
 export const usersRouter = express.Router();
 
-usersRouter.post("/signup", async (req: Request, res: Response) => {
-  //get the data sent
-  const body = req.body;
+usersRouter.post(
+  "/signup",
+  rateLimiter,
+  async (req: Request, res: Response) => {
+    //get the data sent
+    const body = req.body;
 
-  try {
-    //validate the data sent
-    const { email, password, firstName, lastName } =
-      signUpDetailsValidator.parse(body);
+    try {
+      //validate the data sent
+      const { email, password, firstName, lastName } =
+        signUpDetailsValidator.parse(body);
 
-    //hash the password
-    const hashedPassword = hashPassword(password);
+      //hash the password
+      const hashedPassword = hashPassword(password);
 
-    //insert to database
-    const userInfo: User | unknown = await Promise.race([
-      prisma.user.create({
-        data: {
-          email,
-          first_name: firstName,
-          last_name: lastName,
-          password: hashedPassword,
-        },
-        select: {
-          id: true,
-          email: true,
-          last_name: true,
-          first_name: true,
-        },
-      }),
-      new Promise((_, rej) => {
-        setTimeout(() => {
-          rej(new TimeoutError());
-        }, defaultTimeOut);
-      }),
-    ]);
+      //insert to database
+      const userInfo: User | unknown = await Promise.race([
+        prisma.user.create({
+          data: {
+            email,
+            first_name: firstName,
+            last_name: lastName,
+            password: hashedPassword,
+          },
+          select: {
+            id: true,
+            email: true,
+            last_name: true,
+            first_name: true,
+          },
+        }),
+        new Promise((_, rej) => {
+          setTimeout(() => {
+            rej(new TimeoutError());
+          }, defaultTimeOut);
+        }),
+      ]);
 
-    if (!isUser(userInfo)) return;
+      if (!isUser(userInfo)) return;
 
-    if (!process.env.JWT_SECRET) return;
+      if (!process.env.JWT_SECRET) return;
 
-    //generate jwt
-    const token = jwt.sign(userInfo, process.env.JWT_SECRET, {
-      algorithm: "HS256",
-      expiresIn: "24h",
-    });
+      //generate jwt
+      const token = jwt.sign(userInfo, process.env.JWT_SECRET, {
+        algorithm: "HS256",
+        expiresIn: "24h",
+      });
 
-    res
-      .cookie("session-cookie", token, {
-        maxAge: 24 * 60 * 60 * 1000,
-        httpOnly: true,
-        secure: false,
-        sameSite: "none",
-      })
-      .json(userInfo);
-  } catch (error: unknown) {
-    if (error instanceof PrismaClientKnownRequestError) {
-      if (error.code.toLowerCase() === "p2002") {
-        res.status(400).json("Email already exists");
+      res
+        .cookie("session-cookie", token, {
+          maxAge: 24 * 60 * 60 * 1000,
+          httpOnly: true,
+          secure: false,
+          sameSite: "none",
+        })
+        .json("sucess");
+    } catch (error: unknown) {
+      if (error instanceof PrismaClientKnownRequestError) {
+        if (error.code.toLowerCase() === "p2002") {
+          res.status(400).json("Email already exists");
+          return;
+        }
+      }
+
+      if (error instanceof z.ZodError) {
+        res.status(400).json(error.issues[0].message);
         return;
       }
-    }
 
-    if (error instanceof z.ZodError) {
-      res.status(400).json(error.issues[0].message);
+      if (error instanceof TimeoutError) {
+        res.status(error.code).json(error.message);
+        return;
+      }
+
+      res.status(500).json("Internal Server Error");
       return;
     }
-
-    if (error instanceof TimeoutError) {
-      res.status(error.code).json(error.message);
-      return;
-    }
-
-    res.status(500).json("Internal Server Error");
-    return;
   }
-});
+);
 
-usersRouter.post("/login", async (req: Request, res: Response) => {
+usersRouter.post("/login", rateLimiter, async (req: Request, res: Response) => {
   //get the data sent
   const body = req.body;
 
@@ -137,7 +142,10 @@ usersRouter.post("/login", async (req: Request, res: Response) => {
       throw new InvalidCredentials();
     }
 
-    if (!process.env.JWT_SECRET) return;
+    if (!process.env.JWT_SECRET) {
+      res.status(500).json("internal server error");
+      return;
+    }
 
     //generate jwt
     const token = jwt.sign(credentials, process.env.JWT_SECRET, {
@@ -152,7 +160,7 @@ usersRouter.post("/login", async (req: Request, res: Response) => {
         secure: true,
         sameSite: "none",
       })
-      .json(credentials);
+      .json("success");
   } catch (error: unknown) {
     if (error instanceof z.ZodError) {
       res.status(400).json(error.issues[0].message);
@@ -169,7 +177,7 @@ usersRouter.post("/login", async (req: Request, res: Response) => {
       return;
     }
 
-    res.status(500).json("internal server error");
+    res.status(500).json("Internal server error");
     return;
   }
 });
@@ -194,7 +202,8 @@ usersRouter.use(function (req: Request, res: Response, next: NextFunction) {
 
   //if there is no session token, redirect the user to the login page
   if (!token) {
-    return res.redirect("http://localhost:5173/login");
+    res.status(401).json("Not Authenticated");
+    return;
   }
 
   if (!process.env.JWT_SECRET) {
@@ -211,7 +220,7 @@ usersRouter.use(function (req: Request, res: Response, next: NextFunction) {
     next();
   } catch (error) {
     //if the token is invalid, redirect to login
-    res.redirect("http://localhost:5173/login");
+    res.status(401).json("Not Authenticated");
     return;
   }
 });
@@ -221,14 +230,14 @@ usersRouter.get("/me", async (req: Request, res: Response) => {
   const user_id = req.user_id;
 
   if (!user_id) {
-    res.redirect("http://localhost:5173/login");
+    res.status(401).json("Not Authenticated");
     return;
   }
 
   try {
     //get the users info from database
     const result: User | unknown = await Promise.race([
-      prisma.user.findMany({
+      prisma.user.findUnique({
         where: {
           id: user_id,
         },
@@ -237,7 +246,6 @@ usersRouter.get("/me", async (req: Request, res: Response) => {
           last_name: true,
           email: true,
         },
-        take: 5,
       }),
       new Promise((_, rej) => {
         setTimeout(() => {
